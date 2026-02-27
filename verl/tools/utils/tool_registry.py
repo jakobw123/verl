@@ -79,13 +79,14 @@ def get_tool_class(cls_name):
     return tool_cls
 
 
-def initialize_tools_from_config(tools_config_file):
+def initialize_tools_from_config(tools_config_file, extra_config=None):
     """Initialize tools from config file.
 
     Supports both NATIVE and MCP tool types. For MCP tools, a temporary event loop
     is created only when needed and properly closed after use to prevent memory leaks.
     """
     tools_config = OmegaConf.load(tools_config_file)
+    extra_config = extra_config or {}
     tool_list = []
 
     # Lazy initialization for MCP support - only create event loop when needed
@@ -106,7 +107,7 @@ def initialize_tools_from_config(tools_config_file):
         loop = get_mcp_event_loop()
         future = asyncio.run_coroutine_threadsafe(coroutine, loop)
         return future.result()
-
+    
     try:
         for tool_config in tools_config.tools:
             cls_name = tool_config.class_name
@@ -120,8 +121,11 @@ def initialize_tools_from_config(tools_config_file):
                     else:
                         tool_schema_dict = OmegaConf.to_container(tool_config.tool_schema, resolve=True)
                         tool_schema = OpenAIFunctionToolSchema.model_validate(tool_schema_dict)
+                        
+                        final_config = OmegaConf.to_container(tool_config.config, resolve=True)
+                        final_config.update(extra_config)
                     tool = tool_cls(
-                        config=OmegaConf.to_container(tool_config.config, resolve=True),
+                        config=final_config,
                         tool_schema=tool_schema,
                     )
                     tool_list.append(tool)

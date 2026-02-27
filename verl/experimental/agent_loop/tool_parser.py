@@ -44,8 +44,9 @@ class FunctionCall(BaseModel):
 class ToolParser(ABC):
     _registry: dict[str, type["ToolParser"]] = {}
 
-    def __init__(self, tokenizer) -> None:
+    def __init__(self, tokenizer, config = None) -> None:
         self.tokenizer = tokenizer
+        self.config = config or {}
 
     @abstractmethod
     async def extract_tool_calls(
@@ -63,10 +64,10 @@ class ToolParser(ABC):
         raise NotImplementedError
 
     @classmethod
-    def get_tool_parser(cls, name: str, tokenizer):
+    def get_tool_parser(cls, name: str, tokenizer, config = None):
         if name not in cls._registry:
             raise ValueError(f"Unknown tool parser: {name}")
-        return cls._registry[name](tokenizer)
+        return cls._registry[name](tokenizer, config)
 
     @classmethod
     def register(cls, name: str):
@@ -81,12 +82,19 @@ class ToolParser(ABC):
 class HermesToolParser(ToolParser):
     """Adapted from https://github.com/vllm-project/vllm/blob/v0.9.1/vllm/entrypoints/openai/tool_parsers/hermes_tool_parser.py"""
 
-    def __init__(self, tokenizer) -> None:
-        super().__init__(tokenizer)
+    def __init__(
+        self, 
+        tokenizer, 
+        config = {
+            "tool_call_start_token": "<tool_call>", 
+            "tool_call_end_token": "</tool_call>"
+        }
+    ) -> None:
+        super().__init__(tokenizer, config)
 
-        self.tool_call_start_token: str = "<tool_call>"
-        self.tool_call_end_token: str = "</tool_call>"
-        self.tool_call_regex = regex.compile(r"<tool_call>(.*?)</tool_call>", regex.DOTALL)
+        self.tool_call_start_token: str = config.get("tool_call_start_token", "<tool_call>")
+        self.tool_call_end_token: str = config.get("tool_call_end_token", "</tool_call>")
+        self.tool_call_regex = regex.compile(rf"{self.tool_call_start_token}(.*?){self.tool_call_end_token}", regex.DOTALL)
 
     @rollout_trace_op
     async def extract_tool_calls(
@@ -123,17 +131,28 @@ class GptOssToolParser(ToolParser):
         tokenizer: The tokenizer to use.
     """
 
-    def __init__(self, tokenizer) -> None:
-        super().__init__(tokenizer)
+    def __init__(
+        self, 
+        tokenizer, 
+        config = {
+            "cot_pattern_str": r"<\|start\|>assistant<\|channel\|>analysis<\|message\|>.*?<\|end\|>",
+            "partial_cot_pattern": r"<\|channel\|>analysis<\|message\|>(.*?)<\|end\|>",
+            "tool_call_pattern": r"<\|start\|>assistant<\|channel\|>[^<]* to=functions\.([^<]+) "r"<\|constrain\|>json<\|message\|>(.*?)<\|call\|>",
+        }
+    ) -> None:
+        super().__init__(tokenizer, config)
         # check https://cookbook.openai.com/articles/openai-harmony for more details.
         self.cot_pattern = regex.compile(
-            r"<\|start\|>assistant<\|channel\|>analysis<\|message\|>.*?<\|end\|>", regex.DOTALL
+            config.get("cot_pattern_str", r"<\|start\|>assistant<\|channel\|>analysis<\|message\|>.*?<\|end\|>"), regex.DOTALL
         )
         # <|start|>assistant may be pre-appended in prompts, so we need to remove it.
-        self.partial_cot_pattern = regex.compile(r"<\|channel\|>analysis<\|message\|>(.*?)<\|end\|>", regex.DOTALL)
+        self.partial_cot_pattern = regex.compile(
+            config.get("partial_cot_pattern", r"<\|channel\|>analysis<\|message\|>(.*?)<\|end\|>"), regex.DOTALL)
         self.tool_call_pattern = regex.compile(
-            r"<\|start\|>assistant<\|channel\|>[^<]* to=functions\.([^<]+) "
-            r"<\|constrain\|>json<\|message\|>(.*?)<\|call\|>",
+            config.get("tool_call_pattern",
+                r"<\|start\|>assistant<\|channel\|>[^<]* to=functions\.([^<]+) "
+                r"<\|constrain\|>json<\|message\|>(.*?)<\|call\|>"
+            ),
             regex.DOTALL,
         )
 
