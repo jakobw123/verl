@@ -540,7 +540,12 @@ class ToolAgentLoop(AgentLoopBase):
                 videos=agent_data.video_data,
                 remove_system_prompt=True,
             )
-            response_ids = new_prompt_ids[old_prompt_len:]
+            slice_idx = old_prompt_len
+            # If the prefix tokens don't match, walk backwards until they do (usually max 1-2 tokens)
+            while slice_idx > 0 and new_prompt_ids[:slice_idx] != agent_data.prompt_ids[:slice_idx]:
+                slice_idx -= 1
+
+            response_ids = new_prompt_ids[slice_idx:]
 
         if len(agent_data.response_mask) + len(response_ids) >= self.response_length:
             return AgentState.TERMINATED
