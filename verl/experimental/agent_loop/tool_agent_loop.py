@@ -16,7 +16,7 @@ import json
 import logging
 import os
 from enum import Enum
-from typing import Any
+from typing import Any, Dict, Literal, Optional
 from uuid import uuid4
 
 import torch
@@ -127,6 +127,22 @@ class AgentData:
         self.extra_fields: dict[str, Any] = {}
 
 
+def get_template_prefill_string(tokenizer: Any, chat_kwargs: Dict[str, Any]) -> str:
+    """
+    Determines exactly what the tokenizer appends when starting an assistant turn.
+    """
+    dummy_messages = [{"role": "user", "content": "____MARKER____"}]
+    
+    # 1. Get prompt without generation header
+    base = tokenizer.apply_chat_template(dummy_messages, add_generation_prompt=False, tokenize=False, **chat_kwargs)
+    
+    # 2. Get prompt with generation header
+    full = tokenizer.apply_chat_template(dummy_messages, add_generation_prompt=True, tokenize=False, **chat_kwargs)
+    
+    # 3. The difference is the pre-fill string (e.g., '<|im_start|>assistant\n<think>\n')
+    return full[len(base):]
+
+
 @register("tool_agent")
 class ToolAgentLoop(AgentLoopBase):
     def __init__(self, *args, **kwargs):
@@ -138,9 +154,13 @@ class ToolAgentLoop(AgentLoopBase):
         self.max_parallel_calls = self.rollout_config.multi_turn.max_parallel_calls
         self.max_tool_response_length = self.rollout_config.multi_turn.max_tool_response_length
         self.tool_response_truncate_side = self.rollout_config.multi_turn.tool_response_truncate_side
-        self.tool_role_as_user = self.rollout_config.multi_turn.get("tool_role_as_user", False)
+        self.target_role: Literal["assistant", "tool", "user"] = self.rollout_config.multi_turn.get("target_role", "tool")
         tool_config_path = self.rollout_config.multi_turn.tool_config_path
         tool_list = initialize_tools_from_config(tool_config_path) if tool_config_path else []
+
+        prefill_str = get_template_prefill_string(self.tokenizer, chat_kwargs={})
+        self.needs_reasoning_prefill = "<think>" in prefill_str
+
         self.tools = {tool.name: tool for tool in tool_list}
         self.tool_schemas = [tool.tool_schema.model_dump(exclude_unset=True, exclude_none=True) for tool in tool_list]
         self.tool_parser = ToolParser.get_tool_parser(
@@ -316,6 +336,43 @@ class ToolAgentLoop(AgentLoopBase):
         tools = [tool.tool_schema for tool in active_tools.values()]
         _, agent_data.tool_calls = await self.tool_parser.extract_tool_calls(agent_data.response_ids, tools)
 
+        assistant_message = await self.loop.run_in_executor(
+            None, lambda: self.tokenizer.decode(agent_data.response_ids, skip_special_tokens=False)
+        )
+
+        is_fresh_assistant_turn = (not agent_data.messages) or (agent_data.messages[-1]["role"] != "assistant")
+        prefill_this_turn = self.needs_reasoning_prefill and is_fresh_assistant_turn
+
+        # Restore the missing tag so the message history remains intact
+        if prefill_this_turn and not assistant_message.lstrip().startswith("<think>"):
+            assistant_message = "<think>\n" + assistant_message.lstrip()
+
+        # Synchronize Message History
+        if self.target_role == "assistant" and not is_fresh_assistant_turn:
+            last_content = agent_data.messages[-1]["content"]
+            if isinstance(last_content, str):
+                agent_data.messages[-1]["content"] += assistant_message
+
+            else:
+                if last_content and last_content[-1]["type"] == "text":
+                    last_content[-1]["text"] += assistant_message
+
+                else:
+                    last_content.append({"type": "text", "text": assistant_message})
+        else:
+            agent_data.messages.append({"role": "assistant", "content": assistant_message})
+
+        # Handle interaction if needed
+        if self.interaction_config_file:
+            pass
+        # if self.interaction_config_file:
+        #     assistant_message = await self.loop.run_in_executor(
+        #         None, lambda: self.tokenizer.decode(agent_data.response_ids, skip_special_tokens=True)
+        #     )
+        #     add_messages.append({"role": "assistant", "content": assistant_message})
+        #     agent_data.messages.extend(add_messages)
+
+        # Determine next state
         if agent_data.tool_calls:
             return AgentState.PROCESSING_TOOLS
         else:
@@ -325,6 +382,7 @@ class ToolAgentLoop(AgentLoopBase):
         """Handle the processing tools state: execute tool calls and prepare tool responses."""
         add_messages: list[dict[str, Any]] = []
         new_images_this_turn: list[Any] = []  # Local variable instead of agent_data attribute
+        new_videos_this_turn: list[Any] = []
 
         tasks = []
         tool_call_names = []
@@ -334,12 +392,32 @@ class ToolAgentLoop(AgentLoopBase):
 
         with simple_timer("tool_calls", agent_data.metrics):
             responses = await asyncio.gather(*tasks)
-            
-        target_role = "user" if self.tool_role_as_user else "tool"
+    
+        self.target_role
+
+        new_content_blocks = []
 
         # Process tool responses and update multi_modal_data
         # Removed: agent_data.new_images_this_turn = []
         for tool_response, tool_reward, tool_meta in responses:
+            text_resp = tool_response.text or ""
+
+            if self.target_role == "assistant":
+                inline_text = text_resp if text_resp else ""
+
+                if inline_text and self.needs_reasoning_prefill:
+                    inline_text += "<think>\n"
+            else:
+                inline_text = ""
+
+            if tool_reward is not None:
+                agent_data.tool_rewards.append(tool_reward)
+
+            if "tool_metrics" not in agent_data.extra_fields:
+                agent_data.extra_fields["tool_metrics"] = []
+
+            agent_data.extra_fields["tool_metrics"].append(tool_meta)
+
             # Create message from tool response
             if tool_response.image or tool_response.video:
                 # Multi-modal content with structured format
@@ -349,19 +427,32 @@ class ToolAgentLoop(AgentLoopBase):
                         "This error is often caused if you are using a LLM model but your tool returns multimodal "
                         "data. Plase use a vlm as the base model."
                     )
-                content = []
+                content_list = []
                 if tool_response.image:
-                    content.append({"type": "image"})
-                if tool_response.video:
-                    content.append({"type": "video"})
-                if tool_response.text:
-                    content.append({"type": "text", "text": tool_response.text})
-                message = {"role": target_role, "content": content}
-            else:
-                # Text-only content
-                message = {"role": target_role, "content": tool_response.text or ""}
+                    content_list.append({"type": "image"})
+                    if isinstance(tool_response.image, list):
+                        new_images_this_turn.extend([img for img in tool_response.image if img is not None])
+                    elif tool_response.image is not None:
+                        new_images_this_turn.append(tool_response.image)
 
-            add_messages.append(message)
+                if tool_response.video:
+                    content_list.append({"type": "video"})
+                    if isinstance(tool_response.video, list):
+                        new_videos_this_turn.extend([vid for vid in tool_response.video if vid is not None])
+                    elif tool_response.video is not None:
+                        new_videos_this_turn.append(tool_response.video)
+
+                if text_resp:
+                    content_list.append({"type": "text", "text": text_resp})
+
+                add_messages.append({"role": self.target_role, "content": content_list})
+                new_content_blocks.extend([c for c in content_list if c["type"] != "text"])
+                if inline_text:
+                    new_content_blocks.append({"type": "text", "text": inline_text})
+
+            else:
+                add_messages.append({"role": self.target_role, "content": text_resp})
+                new_content_blocks.append({"type": "text", "text": inline_text})
 
             # Handle image data
             if tool_response.image:
@@ -384,51 +475,85 @@ class ToolAgentLoop(AgentLoopBase):
                     "Multimedia type 'video' is not currently supported. Only 'image' is supported."
                 )
 
-            if tool_reward is not None:
-                agent_data.tool_rewards.append(tool_reward)
-                
-            if "tool_metrics" not in agent_data.extra_fields:
-                agent_data.extra_fields["tool_metrics"] = []
-            
-            agent_data.extra_fields["tool_metrics"].append(tool_meta)
-
-        agent_data.messages.extend(add_messages)
-
-        if self.tool_parser_name == "gpt-oss":
-            logger.info("manually format tool responses for gpt-oss")
-            tool_response_text = build_gpt_oss_tool_response_text(add_messages, tool_call_names)
-            response_ids = await self.loop.run_in_executor(
-                None, lambda: self.tokenizer.encode(tool_response_text, add_special_tokens=False)
-            )
-        else:
-            # Note that we have to pass None to the images and videos if there are no new images / videos
-            # to stay compatible with downstream image processing logic!
-            images = new_images_this_turn if new_images_this_turn else None
-            videos = None
-            response_ids = await self.apply_chat_template(
-                add_messages,
-                images=images,
-                videos=videos,
-                remove_system_prompt=True,
-            )
-
-        if len(agent_data.response_mask) + len(response_ids) >= self.response_length:
-            return AgentState.TERMINATED
-        # Update prompt_ids and response_mask
-
         if new_images_this_turn:
             if agent_data.image_data is None:
                 agent_data.image_data = []
             elif not isinstance(agent_data.image_data, list):
                 agent_data.image_data = [agent_data.image_data]
-            for img in new_images_this_turn:
-                agent_data.image_data.append(img)
+            agent_data.image_data.extend(new_images_this_turn)
 
+        if new_videos_this_turn:
+            if agent_data.video_data is None:
+                agent_data.video_data = []
+            elif not isinstance(agent_data.video_data, list):
+                agent_data.video_data = [agent_data.video_data]
+            agent_data.video_data.extend(new_videos_this_turn)
+
+        if self.target_role in ["user", "tool"]:
+            agent_data.messages.extend(add_messages)
+            
+            if self.tool_parser_name == "gpt-oss":
+                logger.info("manually format tool responses for gpt-oss")
+                tool_response_text = build_gpt_oss_tool_response_text(add_messages, tool_call_names)
+                response_ids = await self.loop.run_in_executor(
+                    None, lambda: self.tokenizer.encode(tool_response_text, add_special_tokens=False)
+                )
+            else:
+                # Note that we have to pass None to the images and videos if there are no new images / videos
+                # to stay compatible with downstream image processing logic!
+                response_ids = await self.apply_chat_template(
+                    add_messages,
+                    images=new_images_this_turn if new_images_this_turn else None,
+                    videos=new_videos_this_turn if new_videos_this_turn else None,
+                    remove_system_prompt=True,
+                )
+
+        elif self.target_role == "assistant":
+            if agent_data.messages and agent_data.messages[-1]["role"] == "assistant":
+                last_content = agent_data.messages[-1]["content"]
+                if any(block["type"] != "text" for block in new_content_blocks):
+                    if isinstance(last_content, str):
+                        agent_data.messages[-1]["content"] = [{"type": "text", "text": last_content}] + new_content_blocks
+
+                    else:
+                        agent_data.messages[-1]["content"].extend(new_content_blocks)
+
+                else:
+                    combined_text = "".join(b["text"] for b in new_content_blocks)
+
+                    if isinstance(last_content, str):
+                        agent_data.messages[-1]["content"] += combined_text
+
+                    else:
+                        if last_content and last_content[-1]["type"] == "text":
+                            last_content[-1]["text"] += combined_text
+
+                        else:
+                            agent_data.messages[-1]["content"].append({"type": "text", "text": combined_text})
+            else:
+                agent_data.messages.append({"role": "assistant", "content": new_content_blocks})
+
+            old_prompt_len = len(agent_data.prompt_ids)
+            new_prompt_ids = await self.apply_chat_template(
+                agent_data.messages,
+                images=agent_data.image_data,
+                videos=agent_data.video_data,
+                remove_system_prompt=True,
+            )
+            response_ids = new_prompt_ids[old_prompt_len:]
+
+        if len(agent_data.response_mask) + len(response_ids) >= self.response_length:
+            return AgentState.TERMINATED
+        
+        # Update prompt_ids and response_mask
         agent_data.prompt_ids += response_ids
         agent_data.response_mask += [0] * len(response_ids)
+
         if agent_data.response_logprobs:
             agent_data.response_logprobs += [0.0] * len(response_ids)
+
         agent_data.user_turns += 1
+
         return AgentState.GENERATING
 
     async def _call_tool(
