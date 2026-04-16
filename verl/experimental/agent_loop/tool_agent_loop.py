@@ -16,7 +16,8 @@ import json
 import logging
 import os
 from enum import Enum
-from typing import Any, Dict, Literal, Optional
+import re
+from typing import Any, Dict, Literal, Optional, Tuple
 from uuid import uuid4
 
 import torch
@@ -123,6 +124,8 @@ class AgentData:
         self.tool_rewards: list[float] = []
         self.user_turns = 0
         self.assistant_turns = 0
+        self.last_successful_tool_idx = 0
+        self.t_pivot = 0
 
         # Temporary state for tool calls
         self.tool_calls: list[FunctionCall] = []
@@ -149,6 +152,53 @@ def get_template_prefill_string(tokenizer: Any, chat_kwargs: Dict[str, Any]) -> 
     return full[len(base):]
 
 
+def extract_final_answer_and_status(
+    text: str, 
+    answer_start_tag: str = "<final_answer>", 
+    answer_end_tag: str = "</final_answer>"
+) -> Tuple[str, bool]:
+    """
+    Isolates the final answer. 
+    Returns: (extracted_text, is_structurally_sound)
+    """
+    if not text:
+        return "", False
+
+    # 1. Primary Check: The explicit user-defined tags
+    # pattern = fr"{re.escape(answer_start_tag)}(.*?){re.escape(answer_end_tag)}"
+    # tag_matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
+    # if tag_matches:
+    #     return tag_matches[-1].strip(), True
+
+    has_start = answer_start_tag in text
+    has_end = answer_end_tag in text
+
+    if has_start:
+        # Isolate everything after the LAST occurrence of the start tag
+        content = text.split(answer_start_tag)[-1]
+        
+        # If the end tag exists, chop off everything after it
+        if has_end:
+            content = content.split(answer_end_tag)[0]
+        
+        # Return the extracted content. 
+        # is_structurally_sound is strictly True ONLY if both tags exist.
+        return content.strip(), True
+        
+    # 2. Secondary Check: The standard LaTeX \boxed{} notation
+    boxed_matches = re.findall(r"\\boxed\{((?:[^{}]|(?:\{[^{}]*\}))*)\}", text)
+    if boxed_matches:
+        return boxed_matches[-1].strip(), True
+
+    # 3. Tertiary Check: Common markdown "Final Answer" headers
+    header_matches = re.findall(r"(?i)(?:final\s*answer|answer)\s*:\s*\**\s*(.+)", text)
+    if header_matches:
+        return header_matches[-1].strip(), True
+    
+    # 4. Absolute Fallback: Return the full CoT string
+    return text.strip(), False
+
+
 @register("tool_agent")
 class ToolAgentLoop(AgentLoopBase):
     def __init__(self, *args, **kwargs):
@@ -166,6 +216,16 @@ class ToolAgentLoop(AgentLoopBase):
 
         prefill_str = get_template_prefill_string(self.tokenizer, chat_kwargs={})
         self.needs_reasoning_prefill = "<think>" in prefill_str
+
+        rm_config = self.config.reward_model
+        self.reward_manager_kwargs = rm_config.get("reward_manager_kwargs", {})
+        self.role_configs = self.reward_manager_kwargs.get("role_configs", {})
+        final_answer_role = self.role_configs.get("final_answer", { "start_tag": "<final_answer>", "end_tag": "</final_answer>" })
+        self.final_answer_start_tag = final_answer_role.get("start_tag")
+        self.final_answer_end_tag = final_answer_role.get("end_tag")
+
+        self.use_mt_collapse_masking = self.rollout_config.multi_turn.use_collapse_masking
+        
 
         self.tools = {tool.name: tool for tool in tool_list}
         self.tool_schemas = [tool.tool_schema.model_dump(exclude_unset=True, exclude_none=True) for tool in tool_list]
@@ -264,7 +324,37 @@ class ToolAgentLoop(AgentLoopBase):
             routed_experts=agent_data.routed_experts,
             extra_fields=agent_data.extra_fields,
         )
-        output.extra_fields.update({"turn_scores": agent_data.turn_scores, "tool_rewards": agent_data.tool_rewards})
+
+        hit_token_limit = len(agent_data.response_mask) >= self.response_length
+        hit_turn_limit = (self.max_assistant_turns and agent_data.assistant_turns >= self.max_assistant_turns) or \
+                         (self.max_user_turns and agent_data.user_turns >= self.max_user_turns)
+        
+        full_text = self.tokenizer.decode(response_ids, skip_special_tokens=True)
+        has_start_tag = self.final_answer_start_tag in full_text
+        has_end_tag = self.final_answer_end_tag in full_text
+
+        _, is_structurally_sound = extract_final_answer_and_status(
+            text=full_text,
+            answer_start_tag=self.final_answer_start_tag,
+            answer_end_tag=self.final_answer_end_tag
+        )
+
+        if hit_token_limit or hit_turn_limit or not is_structurally_sound:
+            # STRUCTURAL COLLAPSE: The model babbled endlessly or looped or just broken 
+            # Shield the prefix up to the last known good state.
+            agent_data.t_pivot = agent_data.last_successful_tool_idx
+        else:
+            # STRUCTURAL SUCCESS: It finished its reasoning cleanly (emitted EOS).
+            # Even if the math is wrong, this is NOT gibberish. Set pivot to the 
+            # absolute end so the Bidirectional logic skips the masking.
+            agent_data.t_pivot = len(agent_data.response_mask)
+
+        output.extra_fields.update({
+            "turn_scores": agent_data.turn_scores, 
+            "tool_rewards": agent_data.tool_rewards,
+            "t_pivot": agent_data.t_pivot
+        })
+
         return output
 
     async def _handle_pending_state(self, agent_data: AgentData, sampling_params: dict[str, Any]) -> AgentState:
@@ -353,7 +443,7 @@ class ToolAgentLoop(AgentLoopBase):
         _, agent_data.tool_calls = await self.tool_parser.extract_tool_calls(agent_data.response_ids, tools)
 
         assistant_message = await self.loop.run_in_executor(
-            None, lambda: self.tokenizer.decode(agent_data.response_ids, skip_special_tokens=False)
+            None, lambda: self.tokenizer.decode(agent_data.response_ids, skip_special_tokens=True)
         )
 
         is_fresh_assistant_turn = (not agent_data.messages) or (agent_data.messages[-1]["role"] != "assistant")
@@ -580,6 +670,10 @@ class ToolAgentLoop(AgentLoopBase):
             agent_data.response_logprobs += [0.0] * len(response_ids)
 
         agent_data.user_turns += 1
+
+        any_success = any(meta.get("code_block_success", False) for resp, rew, meta in responses)
+        if any_success:
+            agent_data.last_successful_tool_idx = len(agent_data.response_mask)
 
         return AgentState.GENERATING
 

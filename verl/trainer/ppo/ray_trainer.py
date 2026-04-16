@@ -219,6 +219,31 @@ def compute_advantage(
         advantages, returns = adv_estimator_fn(**adv_kwargs)
         data.batch["advantages"] = advantages
         data.batch["returns"] = returns
+
+    if "t_pivot" in data.non_tensor_batch:
+        advs = data.batch["advantages"]
+        resp_masks = data.batch["response_mask"]
+        t_pivots = data.non_tensor_batch["t_pivot"]
+        
+        for i in range(len(advs)):
+            # Extract sequence-level advantage. 
+            # In GRPO, advantages are broadcast to the sequence shape, so check index [0].
+            seq_adv = advs[i][0].item() if advs[i].dim() > 0 else advs[i].item()
+
+            t_p = t_pivots[i]
+            seq_len = resp_masks.shape[1]
+
+            if t_p < seq_len:
+                if seq_adv < 0:
+                    # NEGATIVE ADVANTAGE (Net Failure)
+                    # Shield the valid prefix, penalize the gibberish suffix.
+                    if t_p > 0:
+                        resp_masks[i, :t_p] = 0
+                else:
+                    # POSITIVE ADVANTAGE (Net Success, but ended in collapse)
+                    # Reward the valid prefix, but DO NOT reward the gibberish suffix.
+                    resp_masks[i, t_p:] = 0
+
     return data
 
 
