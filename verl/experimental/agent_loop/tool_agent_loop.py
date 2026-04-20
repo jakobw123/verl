@@ -204,7 +204,6 @@ class ToolAgentLoop(AgentLoopBase):
         self.max_parallel_calls = self.rollout_config.multi_turn.max_parallel_calls
         self.max_tool_response_length = self.rollout_config.multi_turn.max_tool_response_length
         self.tool_response_truncate_side = self.rollout_config.multi_turn.tool_response_truncate_side
-        self.target_role: Literal["assistant", "tool", "user"] = self.rollout_config.multi_turn.get("target_role", "tool")
         tool_config_path = self.rollout_config.multi_turn.tool_config_path
         tool_list = initialize_tools_from_config(tool_config_path) if tool_config_path else []
 
@@ -212,13 +211,14 @@ class ToolAgentLoop(AgentLoopBase):
         self.needs_reasoning_prefill = "<think>" in prefill_str
 
         rm_config = self.config.reward_model
-        self.reward_manager_kwargs = rm_config.get("reward_manager_kwargs", {})
-        self.role_configs = self.reward_manager_kwargs.get("role_configs", {})
+        self.reward_kwargs = rm_config.get("reward_kwargs", {})
+        self.role_configs = self.reward_kwargs.get("role_configs", {})
         final_answer_role = self.role_configs.get("final_answer", { "start_tag": "<final_answer>", "end_tag": "</final_answer>" })
         self.final_answer_start_tag = final_answer_role.get("start_tag")
         self.final_answer_end_tag = final_answer_role.get("end_tag")
 
-        self.use_mt_collapse_masking = self.rollout_config.multi_turn.use_collapse_masking
+        self.target_role: Literal["assistant", "tool", "user"] = self.reward_kwargs.get("target_role", "tool")
+        self.use_mt_collapse_masking = self.reward_kwargs.get("use_collapse_masking", False)
         
 
         self.tools = {tool.name: tool for tool in tool_list}
@@ -226,7 +226,8 @@ class ToolAgentLoop(AgentLoopBase):
         self.tool_parser = ToolParser.get_tool_parser(
             self.rollout_config.multi_turn.format, 
             self.tokenizer,
-            self.rollout_config.multi_turn.format_config
+            self.rollout_config.multi_turn.tool_config_path.tools[0].config, 
+
         )
         self.tool_parser_config = self.rollout_config.multi_turn.format_config
         self.tool_parser_name = self.rollout_config.multi_turn.format
@@ -384,8 +385,8 @@ class ToolAgentLoop(AgentLoopBase):
         agent_data.response_ids = output.token_ids
         
         engine_name = self.config.actor_rollout_ref.rollout.name
-        include_stop_str_in_output = self.config.actor_rollout_ref.rollout.get("include_stop_str_in_output", False)
-        stop_string_mapping = self.config.actor_rollout_ref.rollout.get("stop_string_mapping", {})
+        include_stop_str_in_output = self.config.reward.reward_kwargs.get("include_stop_str_in_output", False)
+        stop_string_mapping = self.config.reward.reward_kwargs.get("stop_string_mapping", {})
         
         # Only reattach if the engine strips them (i.e., NOT vllm)
         if engine_name != "vllm" and stop_string_mapping and include_stop_str_in_output:

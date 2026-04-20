@@ -416,8 +416,9 @@ class AgentLoopWorker:
             response_mask: | 1, 1, 1, ..., 1, 1 | 0, 0, .., 0, 0 | 1, 1, 1, ..., 1, 1 | 0, 0, ..., 0|
         """
         config = self.rollout_config
-        stop = config.custom.get("stop_string_mapping", {}).values() or []
-        stop_token_ids = config.custom.get("stop_token_ids", [])
+        extra_config = self.config.reward.reward_kwargs
+        stop = list(extra_config.get("stop_string_mapping", {}).values()) or []
+        stop_token_ids = extra_config.get("stop_token_ids", [])
         sampling_params = dict(
             temperature=config.temperature,
             top_p=config.top_p,
@@ -435,7 +436,7 @@ class AgentLoopWorker:
         if batch.meta_info.get("validate", False):
             sampling_params["top_p"] = config.val_kwargs.top_p
             sampling_params["top_k"] = config.val_kwargs.top_k
-            sampling_params["temperature"] = config.val_kwargs.temperature,
+            sampling_params["temperature"] = config.val_kwargs.temperature
 
         # by default, we assume it's a single turn agent
         if "agent_name" not in batch.non_tensor_batch:
