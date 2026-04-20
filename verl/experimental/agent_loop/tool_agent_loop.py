@@ -309,34 +309,34 @@ class ToolAgentLoop(AgentLoopBase):
             extra_fields=agent_data.extra_fields,
         )
 
-        hit_token_limit = len(agent_data.response_mask) >= self.response_length
-        hit_turn_limit = (self.max_assistant_turns and agent_data.assistant_turns >= self.max_assistant_turns) or \
-                         (self.max_user_turns and agent_data.user_turns >= self.max_user_turns)
+        # hit_token_limit = len(agent_data.response_mask) >= self.response_length
+        # hit_turn_limit = (self.max_assistant_turns and agent_data.assistant_turns >= self.max_assistant_turns) or \
+        #                  (self.max_user_turns and agent_data.user_turns >= self.max_user_turns)
         
-        full_text = self.tokenizer.decode(response_ids, skip_special_tokens=True)
-        has_start_tag = self.final_answer_start_tag in full_text
-        has_end_tag = self.final_answer_end_tag in full_text
+        # full_text = self.tokenizer.decode(response_ids, skip_special_tokens=True)
+        # has_start_tag = self.final_answer_start_tag in full_text
+        # has_end_tag = self.final_answer_end_tag in full_text
 
-        _, is_structurally_sound = extract_final_answer_and_status(
-            text=full_text,
-            answer_start_tag=self.final_answer_start_tag,
-            answer_end_tag=self.final_answer_end_tag
-        )
+        # _, is_structurally_sound = extract_final_answer_and_status(
+        #     text=full_text,
+        #     answer_start_tag=self.final_answer_start_tag,
+        #     answer_end_tag=self.final_answer_end_tag
+        # )
 
-        if hit_token_limit or hit_turn_limit or not is_structurally_sound:
-            # STRUCTURAL COLLAPSE: The model babbled endlessly or looped or just broken 
-            # Shield the prefix up to the last known good state.
-            agent_data.t_pivot = agent_data.last_successful_tool_idx
-        else:
-            # STRUCTURAL SUCCESS: It finished its reasoning cleanly (emitted EOS).
-            # Even if the math is wrong, this is NOT gibberish. Set pivot to the 
-            # absolute end so the Bidirectional logic skips the masking.
-            agent_data.t_pivot = len(agent_data.response_mask)
+        # if hit_token_limit or hit_turn_limit or not is_structurally_sound:
+        #     # STRUCTURAL COLLAPSE: The model babbled endlessly or looped or just broken 
+        #     # Shield the prefix up to the last known good state.
+        #     agent_data.t_pivot = agent_data.last_successful_tool_idx
+        # else:
+        #     # STRUCTURAL SUCCESS: It finished its reasoning cleanly (emitted EOS).
+        #     # Even if the math is wrong, this is NOT gibberish. Set pivot to the 
+        #     # absolute end so the Bidirectional logic skips the masking.
+        #     agent_data.t_pivot = len(agent_data.response_mask)
 
         output.extra_fields.update({
             "turn_scores": agent_data.turn_scores, 
             "tool_rewards": agent_data.tool_rewards,
-            "t_pivot": agent_data.t_pivot
+            "tool_metrics": agent_data.extra_fields.get("tool_metrics", [])
         })
 
         return output
@@ -482,8 +482,6 @@ class ToolAgentLoop(AgentLoopBase):
 
         with simple_timer("tool_calls", agent_data.metrics):
             responses = await asyncio.gather(*tasks)
-    
-        self.target_role
 
         new_content_blocks = []
 
@@ -535,14 +533,23 @@ class ToolAgentLoop(AgentLoopBase):
                 if text_resp:
                     content_list.append({"type": "text", "text": text_resp})
 
-                add_messages.append({"role": self.target_role, "content": content_list})
-                new_content_blocks.extend([c for c in content_list if c["type"] != "text"])
-                if inline_text:
-                    new_content_blocks.append({"type": "text", "text": inline_text})
+                if self.target_role in ["user", "tool"]:
+                    add_messages.append({"role": self.target_role, "content": content_list})
+
+                elif self.target_role == "assistant":
+                    new_content_blocks.extend([c for c in content_list if c["type"] != "text"])
+                    if inline_text:
+                        new_content_blocks.append({"type": "text", "text": inline_text})
 
             else:
-                add_messages.append({"role": self.target_role, "content": text_resp})
-                new_content_blocks.append({"type": "text", "text": inline_text})
+                if self.target_role in ["user", "tool"]:
+                    add_messages.append({"role": self.target_role, "content": text_resp})
+
+                elif self.target_role == "assistant":
+                    if inline_text:
+                        new_content_blocks.append({"type": "text", "text": inline_text})
+                # add_messages.append({"role": self.target_role, "content": text_resp})
+                # new_content_blocks.append({"type": "text", "text": inline_text})
 
             # Handle image data
             if tool_response.image:
@@ -598,6 +605,20 @@ class ToolAgentLoop(AgentLoopBase):
                     remove_system_prompt=True,
                 )
 
+                # # FULL HISTORY SLICING FIX
+                # old_prompt_len = len(agent_data.prompt_ids)
+                
+                # # Apply template to the FULL history to guarantee correct tokenizer state
+                # new_prompt_ids = await self.apply_chat_template(
+                #     agent_data.messages,
+                #     images=agent_data.image_data, 
+                #     videos=agent_data.video_data, 
+                #     remove_system_prompt=True,
+                # )
+                
+                # # Strict mathematical extraction of the delta tokens
+                # response_ids = new_prompt_ids[old_prompt_len:]
+
         elif self.target_role == "assistant":
             if agent_data.messages and agent_data.messages[-1]["role"] == "assistant":
                 last_content = agent_data.messages[-1]["content"]
@@ -623,27 +644,41 @@ class ToolAgentLoop(AgentLoopBase):
             else:
                 agent_data.messages.append({"role": "assistant", "content": new_content_blocks})
 
-            old_prompt_len = len(agent_data.prompt_ids)
-            new_prompt_ids = await self.apply_chat_template(
-                agent_data.messages,
-                images=agent_data.image_data,
-                videos=agent_data.video_data,
-                remove_system_prompt=True,
+
+            text_delta = ""
+            for block in new_content_blocks:
+                if block["type"] == "text":
+                    text_delta += block["text"]
+            
+            response_ids = await self.loop.run_in_executor(
+                None, lambda: self.tokenizer.encode(text_delta, add_special_tokens=False)
             )
 
-            # Prevent token mismatch, usually max 1-5 tokens
-            safe_anchor = max(0, old_prompt_len - 5)
-            diverge_idx = safe_anchor
-            while diverge_idx < old_prompt_len and diverge_idx < len(new_prompt_ids):
-                if agent_data.prompt_ids[diverge_idx] != new_prompt_ids[diverge_idx]:
-                    break
-                diverge_idx += 1
+            # old_prompt_len = len(agent_data.prompt_ids)
+            # new_prompt_ids = await self.apply_chat_template(
+            #     agent_data.messages,
+            #     images=agent_data.image_data,
+            #     videos=agent_data.video_data,
+            #     remove_system_prompt=True,
+            # )
 
-            response_ids = new_prompt_ids[diverge_idx:]
+            # # Prevent token mismatch, usually max 1-5 tokens
+            # safe_anchor = max(0, old_prompt_len - 5)
+            # diverge_idx = safe_anchor
+            # while diverge_idx < old_prompt_len and diverge_idx < len(new_prompt_ids):
+            #     if agent_data.prompt_ids[diverge_idx] != new_prompt_ids[diverge_idx]:
+            #         break
+            #     diverge_idx += 1
+
+            # response_ids = new_prompt_ids[diverge_idx:]
 
         if len(agent_data.response_mask) + len(response_ids) >= self.response_length:
             return AgentState.TERMINATED
-        
+
+        start_token_idx = len(agent_data.response_mask)
+        if len(response_ids):
+            start_token_idx += 1
+
         # Update prompt_ids and response_mask
         agent_data.prompt_ids += response_ids
         agent_data.response_mask += [0] * len(response_ids)
@@ -653,9 +688,13 @@ class ToolAgentLoop(AgentLoopBase):
 
         agent_data.user_turns += 1
 
-        any_success = any(meta.get("code_block_success", False) for resp, rew, meta in responses)
-        if any_success:
-            agent_data.last_successful_tool_idx = len(agent_data.response_mask)
+        end_token_idx = len(agent_data.response_mask)
+
+        if self.use_mt_collapse_masking and agent_data.extra_fields.get("tool_metrics"):
+            latest_metric = agent_data.extra_fields["tool_metrics"][-1] 
+
+            latest_metric["start_token_idx"] = start_token_idx
+            latest_metric["end_token_idx"] = end_token_idx
 
         return AgentState.GENERATING
 
