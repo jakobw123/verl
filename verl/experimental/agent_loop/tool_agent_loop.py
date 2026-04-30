@@ -353,7 +353,8 @@ class ToolAgentLoop(AgentLoopBase):
         output.extra_fields.update({
             "turn_scores": agent_data.turn_scores, 
             "tool_rewards": agent_data.tool_rewards,
-            "tool_metrics": agent_data.extra_fields.get("tool_metrics", [])
+            "tool_metrics": agent_data.extra_fields.get("tool_metrics", []),
+            "use_mt_collapse_masking": self.use_mt_collapse_masking
         })
 
         return output
