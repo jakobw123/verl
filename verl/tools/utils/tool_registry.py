@@ -122,8 +122,9 @@ def initialize_tools_from_config(tools_config_file, extra_config=None):
                         tool_schema_dict = OmegaConf.to_container(tool_config.tool_schema, resolve=True)
                         tool_schema = OpenAIFunctionToolSchema.model_validate(tool_schema_dict)
                         
-                        final_config = OmegaConf.to_container(tool_config.config, resolve=True)
-                        final_config.update(extra_config)
+                    final_config = OmegaConf.to_container(tool_config.config, resolve=True)
+                    final_config.update(extra_config)
+                    
                     tool = tool_cls(
                         config=final_config,
                         tool_schema=tool_schema,
