@@ -461,7 +461,7 @@ class AgentLoopWorker:
         import os
         
         # Mathematically distinct port
-        port = 5678 + self.worker_idx
+        port = 5680 + self.worker_idx
         
         try:
             debugpy.listen(("0.0.0.0", port))
