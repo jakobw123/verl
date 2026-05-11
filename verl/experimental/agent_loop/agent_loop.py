@@ -404,6 +404,7 @@ class AgentLoopWorker:
         servers: list[tuple[str, ray.actor.ActorHandle]],
         load_balancer_handle: ray.actor.ActorHandle,
         reward_loop_worker_handles: list[ray.actor.ActorHandle] = None,
+        worker_idx: int = 0,
     ):
         """Initialize agent loop manager.
         Args:
@@ -416,6 +417,10 @@ class AgentLoopWorker:
         rollout_config, model_config = _get_rollout_and_model_config(config)
         self.rollout_config: RolloutConfig = omega_conf_to_dataclass(rollout_config)
         self.model_config: HFModelConfig = omega_conf_to_dataclass(model_config)
+
+        self.worker_idx = worker_idx
+
+        self._attach_debugger(target_worker=0)
 
         # for recipe to change
         if not hasattr(self, "server_manager"):
@@ -451,6 +456,25 @@ class AgentLoopWorker:
             trace_config.get("max_samples_per_step_per_worker", None),
         )
 
+    def _attach_debugger(self, target_worker: int):
+        import debugpy
+        import os
+        
+        # Mathematically distinct port
+        port = 5678 + self.worker_idx
+        
+        try:
+            debugpy.listen(("0.0.0.0", port))
+            print(f"[AgentLoopWorker {self.worker_idx} | PID {os.getpid()}] Debug server bound to port {port}.")
+            
+            # Freeze only the targeted worker
+            if self.worker_idx == target_worker:
+                print(f"[AgentLoopWorker {self.worker_idx}] Execution paused. Waiting for VS Code...")
+                debugpy.wait_for_client()
+                print(f"[AgentLoopWorker {self.worker_idx}] Debugger attached. Resuming.")
+        except Exception as e:
+            print(f"AgentLoopWorker {self.worker_idx} failed to bind port {port}: {e}")
+
     async def generate_sequences(self, batch: DataProto) -> DataProto:
         """Generate sequences from agent loop.
 
@@ -472,6 +496,7 @@ class AgentLoopWorker:
             responses:     |<- LLM generation ->|<- tool_calls ->|<- LLM generation ->|<- padding ->|
             response_mask: | 1, 1, 1, ..., 1, 1 | 0, 0, .., 0, 0 | 1, 1, 1, ..., 1, 1 | 0, 0, ..., 0|
         """
+
         config = self.rollout_config
         extra_config = self.config.reward.reward_kwargs
         stop = list(extra_config.get("stop_string_mapping", {}).values()) or []
@@ -1025,6 +1050,7 @@ class AgentLoopManager:
                     servers,
                     load_balancer_handle,
                     self.reward_loop_worker_handles,
+                    worker_idx=i
                 )
             )
 

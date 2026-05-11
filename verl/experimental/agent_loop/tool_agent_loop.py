@@ -47,6 +47,8 @@ class AgentState(Enum):
     GENERATING = "generating"
     PROCESSING_TOOLS = "processing_tools"
     TERMINATED = "terminated"
+    INTERACTING = "interacting"
+
     
 
 def reattach_stop_string_universal(generated_text: str, stop_mapping: dict[str, str]) -> str:
@@ -472,19 +474,19 @@ class ToolAgentLoop(AgentLoopBase):
 
         # Handle interaction if needed
         if self.interaction_config_file:
-            pass
-        # if self.interaction_config_file:
-        #     assistant_message = await self.loop.run_in_executor(
-        #         None, lambda: self.tokenizer.decode(agent_data.response_ids, skip_special_tokens=True)
-        #     )
-        #     add_messages.append({"role": "assistant", "content": assistant_message})
-        #     agent_data.messages.extend(add_messages)
+            assistant_message = await self.loop.run_in_executor(
+                None, lambda: self.tokenizer.decode(agent_data.response_ids, skip_special_tokens=True)
+            )
+            add_messages.append({"role": "assistant", "content": assistant_message})
+            agent_data.messages.extend(add_messages)
 
         # Determine next state
         if agent_data.tool_calls:
             return AgentState.PROCESSING_TOOLS
+
         elif self.interaction_config_file:
             return AgentState.INTERACTING
+
         else:
             return AgentState.TERMINATED
 
@@ -717,7 +719,7 @@ class ToolAgentLoop(AgentLoopBase):
             latest_metric["end_token_idx"] = end_token_idx
 
         return AgentState.GENERATING
-
+    
     async def _handle_interacting_state(self, agent_data: AgentData) -> AgentState:
         """Handle the interacting state: get user input from interaction."""
         (
@@ -754,6 +756,7 @@ class ToolAgentLoop(AgentLoopBase):
             return AgentState.TERMINATED
         else:
             return AgentState.GENERATING
+        
 
     async def _call_tool(
         self, tool_call: FunctionCall, tools_kwargs: dict[str, Any], agent_data: AgentData
