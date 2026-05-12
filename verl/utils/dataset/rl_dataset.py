@@ -124,7 +124,8 @@ class RLHFDataset(Dataset):
                 tool_list = initialize_tools_from_config(self.tool_config_path)
                 # match ToolAgentLoop behaviour: model_dump to plain dicts
                 self.tool_schemas = [
-                    tool.tool_schema.model_dump(exclude_unset=True, exclude_none=True) for tool in tool_list
+                    tool.tool_schema.model_dump(exclude_unset=True, exclude_none=True)
+                    for tool in tool_list if getattr(tool, "tool_schema", None) is not None
                 ]
             except Exception as e:
                 logger.warning("Failed to initialize tools from %s: %s", self.tool_config_path, e)
@@ -196,7 +197,7 @@ class RLHFDataset(Dataset):
                         messages = self._build_messages(doc)
                         # pass tool schemas if available so the processor can format prompts
                         apply_kwargs = dict(**self.apply_chat_template_kwargs)
-                        if self.tool_schemas is not None:
+                        if self.tool_schemas:
                             apply_kwargs["tools"] = self.tool_schemas
 
                         raw_prompt = self.processor.apply_chat_template(
@@ -241,7 +242,7 @@ class RLHFDataset(Dataset):
                 def doc2len(doc) -> int:
                     try:
                         apply_kwargs = dict(**self.apply_chat_template_kwargs)
-                        if self.tool_schemas is not None:
+                        if self.tool_schemas:
                             apply_kwargs["tools"] = self.tool_schemas
 
                         # Keep explicit tokenization to avoid transformers version default changes.

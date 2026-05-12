@@ -459,21 +459,21 @@ class AgentLoopWorker:
     def _attach_debugger(self, target_worker: int):
         import debugpy
         import os
+        import socket
         
-        # Mathematically distinct port
-        port = 5680 + self.worker_idx
+        # Freeze only the targeted worker
+        if self.worker_idx == target_worker:
+            debugger_host = os.environ.get("DEBUG_LOGIN_HOST", "127.0.0.1")
+            port = 5705 
         
-        try:
-            debugpy.listen(("0.0.0.0", port))
-            print(f"[AgentLoopWorker {self.worker_idx} | PID {os.getpid()}] Debug server bound to port {port}.")
-            
-            # Freeze only the targeted worker
-            if self.worker_idx == target_worker:
-                print(f"[AgentLoopWorker {self.worker_idx}] Execution paused. Waiting for VS Code...")
-                debugpy.wait_for_client()
-                print(f"[AgentLoopWorker {self.worker_idx}] Debugger attached. Resuming.")
-        except Exception as e:
-            print(f"AgentLoopWorker {self.worker_idx} failed to bind port {port}: {e}")
+            my_hostname = socket.gethostname()
+            try:
+                print(f"[AgentLoopWorker {self.worker_idx} on {my_hostname}] Reaching out to VS Code at {debugger_host}:{port}...")
+                debugpy.connect((debugger_host, port))
+                print(f"[AgentLoopWorker {self.worker_idx}] Successfully connected to the login node debugger!")
+
+            except Exception as e:
+                print(f"[AgentLoopWorker {self.worker_idx}] Failed to connect to {debugger_host}:{port} - {e}")
 
     async def generate_sequences(self, batch: DataProto) -> DataProto:
         """Generate sequences from agent loop.

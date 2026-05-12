@@ -206,6 +206,9 @@ class ToolAgentLoop(AgentLoopBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+        import debugpy
+        if debugpy.is_client_connected(): debugpy.breakpoint()
+
         # Initialize tools from config file
         self.max_user_turns = self.rollout_config.multi_turn.max_user_turns
         self.max_assistant_turns = self.rollout_config.multi_turn.max_assistant_turns
@@ -229,8 +232,11 @@ class ToolAgentLoop(AgentLoopBase):
         self.use_mt_collapse_masking = self.reward_kwargs.get("use_collapse_masking", False)
         
 
-        self.tools = {tool.name: tool for tool in tool_list}
-        self.tool_schemas = [tool.tool_schema.model_dump(exclude_unset=True, exclude_none=True) for tool in tool_list]
+        self.tools = { tool.name: tool for tool in tool_list }
+        self.tool_schemas = [
+            tool.tool_schema.model_dump(exclude_unset=True, exclude_none=True)
+            for tool in tool_list for tool in tool_list if getattr(tool, "tool_schema", None) is not None
+        ]
         self.tool_parser = ToolParser.get_tool_parser(
             self.rollout_config.multi_turn.format, 
             self.tokenizer,
@@ -443,7 +449,7 @@ class ToolAgentLoop(AgentLoopBase):
             return AgentState.TERMINATED
 
         # Extract tool calls
-        tools = [tool.tool_schema for tool in self.tools.values()]
+        tools = [tool.tool_schema for tool in self.tools.values() if getattr(tool, "tool_schema", None) is not None]
         _, agent_data.tool_calls = await self.tool_parser.extract_tool_calls(agent_data.response_ids, tools)
 
         assistant_message = await self.loop.run_in_executor(
@@ -495,6 +501,9 @@ class ToolAgentLoop(AgentLoopBase):
         add_messages: list[dict[str, Any]] = []
         new_images_this_turn: list[Any] = []  # Local variable instead of agent_data attribute
         new_videos_this_turn: list[Any] = []
+
+        import debugpy
+        if debugpy.is_client_connected(): debugpy.breakpoint()
 
         tasks = []
         tool_call_names = []
