@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import asyncio
+import json
 import logging
 import os
 import random
@@ -389,6 +390,14 @@ def register(agent_name: str):
     return decorator
 
 
+def _force_log(message: str):
+    """Bypasses Ray/SLURM stdout routing by writing directly to disk."""
+    # Using your absolute path from previous logs
+    log_path = "/pfs/data6/home/ka/ka_stud/ka_uqefa/ray_debug_override_agent_loop.txt"
+    with open(log_path, "a") as f:
+        f.write(f"{message}\n")
+
+
 class AgentLoopWorker:
     """Agent loop worker takes a batch of messages and run each message in an agent loop.
 
@@ -420,7 +429,7 @@ class AgentLoopWorker:
 
         self.worker_idx = worker_idx
 
-        self._attach_debugger(target_worker=0)
+        # self._attach_debugger(target_worker=0)
 
         # for recipe to change
         if not hasattr(self, "server_manager"):
@@ -456,24 +465,35 @@ class AgentLoopWorker:
             trace_config.get("max_samples_per_step_per_worker", None),
         )
 
-    def _attach_debugger(self, target_worker: int):
-        import debugpy
-        import os
-        import socket
+    # def _attach_debugger(self, target_worker: int):
+    #     import debugpy
+    #     import os
+    #     import time
+    #     import socket
         
-        # Freeze only the targeted worker
-        if self.worker_idx == target_worker:
-            debugger_host = os.environ.get("DEBUG_LOGIN_HOST", "127.0.0.1")
-            port = 5705 
+    #     # Freeze only the targeted worker
+    #     if self.worker_idx == target_worker:
+    #         debugger_host = os.environ.get("DEBUG_LOGIN_HOST", "127.0.0.1")
+    #         port = 5705 
         
-            my_hostname = socket.gethostname()
-            try:
-                print(f"[AgentLoopWorker {self.worker_idx} on {my_hostname}] Reaching out to VS Code at {debugger_host}:{port}...")
-                debugpy.connect((debugger_host, port))
-                print(f"[AgentLoopWorker {self.worker_idx}] Successfully connected to the login node debugger!")
+    #         my_hostname = socket.gethostname()
+    #         print(f"[AgentLoopWorker {self.worker_idx}] Reaching out to VS Code at {debugger_host}:{port}...")
+            
+    #         connected = False
+    #         # 60-second fault tolerance loop
+    #         for attempt in range(12):
+    #             try:
+    #                 debugpy.connect((debugger_host, port))
+    #                 connected = True
+    #                 break
+    #             except Exception as e:
+    #                 print(f"  -> Attempt {attempt + 1}/12 failed. Retrying in 5s... (Check VS Code listener & IP)")
+    #                 time.sleep(5)
 
-            except Exception as e:
-                print(f"[AgentLoopWorker {self.worker_idx}] Failed to connect to {debugger_host}:{port} - {e}")
+    #         if connected:
+    #             print(f"[AgentLoopWorker {self.worker_idx}] Successfully connected to the login node debugger!")
+    #         else:
+    #             print(f"[AgentLoopWorker {self.worker_idx}] CRITICAL: Could not connect to debugger after 60s. Continuing blindly.")
 
     async def generate_sequences(self, batch: DataProto) -> DataProto:
         """Generate sequences from agent loop.
@@ -501,6 +521,11 @@ class AgentLoopWorker:
         extra_config = self.config.reward.reward_kwargs
         stop = list(extra_config.get("stop_string_mapping", {}).values()) or []
         stop_token_ids = extra_config.get("stop_token_ids", [])
+
+        # Works correctly!
+        # vllm receives it and stops!
+        # _force_log(json.dumps({ "stop": stop, "stop_token_ids": stop_token_ids }))
+
         sampling_params = dict(
             temperature=config.temperature,
             top_p=config.top_p,

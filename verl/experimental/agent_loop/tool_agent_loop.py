@@ -42,6 +42,13 @@ logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 
+def _force_log(message: str):
+    """Bypasses Ray/SLURM stdout routing by writing directly to disk."""
+    # Using your absolute path from previous logs
+    log_path = "/pfs/data6/home/ka/ka_stud/ka_uqefa/ray_debug_override_tool_agent_loop.txt"
+    with open(log_path, "a") as f:
+        f.write(f"{message}\n")
+
 class AgentState(Enum):
     PENDING = "pending"
     GENERATING = "generating"
@@ -206,9 +213,6 @@ class ToolAgentLoop(AgentLoopBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        import debugpy
-        if debugpy.is_client_connected(): debugpy.breakpoint()
-
         # Initialize tools from config file
         self.max_user_turns = self.rollout_config.multi_turn.max_user_turns
         self.max_assistant_turns = self.rollout_config.multi_turn.max_assistant_turns
@@ -310,6 +314,8 @@ class ToolAgentLoop(AgentLoopBase):
             else:
                 logger.error(f"Invalid state: {state}")
                 state = AgentState.TERMINATED
+
+        _force_log(agent_data.messages)
 
         # Finalize output
         response_ids = agent_data.prompt_ids[-len(agent_data.response_mask) :]
@@ -479,12 +485,12 @@ class ToolAgentLoop(AgentLoopBase):
             agent_data.messages.append({"role": "assistant", "content": assistant_message})
 
         # Handle interaction if needed
-        if self.interaction_config_file:
-            assistant_message = await self.loop.run_in_executor(
-                None, lambda: self.tokenizer.decode(agent_data.response_ids, skip_special_tokens=True)
-            )
-            add_messages.append({"role": "assistant", "content": assistant_message})
-            agent_data.messages.extend(add_messages)
+        # if self.interaction_config_file:
+        #     assistant_message = await self.loop.run_in_executor(
+        #         None, lambda: self.tokenizer.decode(agent_data.response_ids, skip_special_tokens=True)
+        #     )
+        #     add_messages.append({"role": "assistant", "content": assistant_message})
+        #     agent_data.messages.extend(add_messages)
 
         # Determine next state
         if agent_data.tool_calls:
@@ -502,8 +508,9 @@ class ToolAgentLoop(AgentLoopBase):
         new_images_this_turn: list[Any] = []  # Local variable instead of agent_data attribute
         new_videos_this_turn: list[Any] = []
 
-        import debugpy
-        if debugpy.is_client_connected(): debugpy.breakpoint()
+        tool_calls_serial = "\n".join([f"name: {tc.name} | arguments: {tc.arguments}" for tc in agent_data.tool_calls])
+        
+        _force_log(tool_calls_serial)
 
         tasks = []
         tool_call_names = []
@@ -518,7 +525,7 @@ class ToolAgentLoop(AgentLoopBase):
 
         # Process tool responses and update multi_modal_data
         # Removed: agent_data.new_images_this_turn = []
-        for tool_response, tool_reward, tool_meta in responses:
+        for (tool_response, tool_reward, tool_meta), tool_name in zip(responses, tool_call_names):
             text_resp = tool_response.text or ""
 
             if self.target_role == "assistant":
@@ -534,6 +541,11 @@ class ToolAgentLoop(AgentLoopBase):
 
             if "tool_metrics" not in agent_data.extra_fields:
                 agent_data.extra_fields["tool_metrics"] = []
+
+            tool_meta["tool_name"] = tool_name
+            tool_meta["assistant_turn"] = agent_data.assistant_turns
+            tool_meta["user_turn"] = agent_data.user_turns
+            tool_meta["parallel_idx"] = len(agent_data.extra_fields["tool_metrics"])
 
             agent_data.extra_fields["tool_metrics"].append(tool_meta)
 
