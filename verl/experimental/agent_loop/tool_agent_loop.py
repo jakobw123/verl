@@ -20,6 +20,7 @@ import re
 from typing import Any, Dict, Literal, Optional, Tuple
 from uuid import uuid4
 
+from omegaconf import OmegaConf
 import torch
 from PIL import Image
 
@@ -225,7 +226,7 @@ class ToolAgentLoop(AgentLoopBase):
         prefill_str = get_template_prefill_string(self.tokenizer, chat_kwargs={})
         self.needs_reasoning_prefill = "<think>" in prefill_str
 
-        rm_config = self.config.reward_model
+        rm_config = self.config.reward
         self.reward_kwargs = rm_config.get("reward_kwargs", {})
         self.role_configs = self.reward_kwargs.get("role_configs", {})
         final_answer_role = self.role_configs.get("final_answer", { "start_tag": "<final_answer>", "end_tag": "</final_answer>" })
@@ -241,13 +242,22 @@ class ToolAgentLoop(AgentLoopBase):
             tool.tool_schema.model_dump(exclude_unset=True, exclude_none=True)
             for tool in tool_list for tool in tool_list if getattr(tool, "tool_schema", None) is not None
         ]
+        raw_tool_cfg = OmegaConf.load(self.rollout_config.multi_turn.tool_config_path)
+        resolved_cfg = OmegaConf.to_container(raw_tool_cfg, resolve=True)
+
+        if isinstance(resolved_cfg, list):
+            self.tool_configs = resolved_cfg
+        elif isinstance(resolved_cfg, dict) and 'tools' in resolved_cfg:
+            self.tool_configs = resolved_cfg['tools']
+        else:
+            # If it's just a single tool dict not in a list
+            self.tool_configs = [resolved_cfg]
+
         self.tool_parser = ToolParser.get_tool_parser(
             self.rollout_config.multi_turn.format, 
             self.tokenizer,
-            self.rollout_config.multi_turn.tool_config_path.tools[0].config, 
-
+            self.tool_configs[0]["config"], 
         )
-        self.tool_parser_config = self.rollout_config.multi_turn.format_config
         self.tool_parser_name = self.rollout_config.multi_turn.format
 
         self.prompt_length = self.rollout_config.prompt_length
@@ -419,6 +429,8 @@ class ToolAgentLoop(AgentLoopBase):
         engine_name = self.config.actor_rollout_ref.rollout.name
         include_stop_str_in_output = self.config.reward.reward_kwargs.get("include_stop_str_in_output", False)
         stop_string_mapping = self.config.reward.reward_kwargs.get("stop_string_mapping", {})
+
+        _force_log("#### engine_name ####")
         
         # Only reattach if the engine strips them (i.e., NOT vllm)
         if engine_name != "vllm" and stop_string_mapping and include_stop_str_in_output:
@@ -446,12 +458,18 @@ class ToolAgentLoop(AgentLoopBase):
         if output.routed_experts is not None:
             agent_data.routed_experts = output.routed_experts
 
+        _force_log(f"##### {len(agent_data.response_mask) == len(agent_data.response_logprobs)} #####")
+        _force_log(f"\n[CRITICAL PROOF] Active Parser Name: {self.tool_parser_name} | Class: {self.tool_parser.__class__.__name__}")
+
         # Check termination conditions
         if not ignore_termination and len(agent_data.response_mask) >= self.response_length:
+            _force_log("#### not ignore_termination and len(agent_data.response_mask) >= self.response_length ####")
             return AgentState.TERMINATED
         if self.max_assistant_turns and agent_data.assistant_turns >= self.max_assistant_turns:
+            _force_log("#### self.max_assistant_turns and agent_data.assistant_turns >= self.max_assistant_turns ####")
             return AgentState.TERMINATED
         if self.max_user_turns and agent_data.user_turns >= self.max_user_turns:
+            _force_log("#### self.max_user_turns and agent_data.user_turns >= self.max_user_turns ####")
             return AgentState.TERMINATED
 
         # Extract tool calls

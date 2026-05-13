@@ -621,6 +621,10 @@ class AgentLoopWorker:
                 dataset_cls=self.dataset_cls,
                 data_config=DictConfigWrap(self.config.data),
             )
+
+            # import sys
+            # _force_log(f"[CRITICAL WORKER RECON] Instantiated Agent Loop Class: {agent_loop.__class__.__name__}")
+            # _force_log(f"[CRITICAL WORKER RECON] Agent Loop Module File: {sys.modules[agent_loop.__class__.__module__].__file__}")
             output: AgentLoopOutput = await agent_loop.run(sampling_params, **kwargs)
             return await self._agent_loop_postprocess(output, **kwargs)
 
