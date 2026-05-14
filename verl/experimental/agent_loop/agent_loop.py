@@ -390,14 +390,6 @@ def register(agent_name: str):
     return decorator
 
 
-def _force_log(message: str):
-    """Bypasses Ray/SLURM stdout routing by writing directly to disk."""
-    # Using your absolute path from previous logs
-    log_path = "/pfs/data6/home/ka/ka_stud/ka_uqefa/ray_debug_override_agent_loop.txt"
-    with open(log_path, "a") as f:
-        f.write(f"{message}\n")
-
-
 class AgentLoopWorker:
     """Agent loop worker takes a batch of messages and run each message in an agent loop.
 
@@ -522,10 +514,6 @@ class AgentLoopWorker:
         stop = list(extra_config.get("stop_string_mapping", {}).values()) or []
         stop_token_ids = extra_config.get("stop_token_ids", [])
 
-        # Works correctly!
-        # vllm receives it and stops!
-        # _force_log(json.dumps({ "stop": stop, "stop_token_ids": stop_token_ids }))
-
         sampling_params = dict(
             temperature=config.temperature,
             top_p=config.top_p,
@@ -622,9 +610,6 @@ class AgentLoopWorker:
                 data_config=DictConfigWrap(self.config.data),
             )
 
-            # import sys
-            # _force_log(f"[CRITICAL WORKER RECON] Instantiated Agent Loop Class: {agent_loop.__class__.__name__}")
-            # _force_log(f"[CRITICAL WORKER RECON] Agent Loop Module File: {sys.modules[agent_loop.__class__.__module__].__file__}")
             output: AgentLoopOutput = await agent_loop.run(sampling_params, **kwargs)
             return await self._agent_loop_postprocess(output, **kwargs)
 

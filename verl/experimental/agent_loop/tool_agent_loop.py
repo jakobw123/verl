@@ -43,13 +43,6 @@ logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 
-def _force_log(message: str):
-    """Bypasses Ray/SLURM stdout routing by writing directly to disk."""
-    # Using your absolute path from previous logs
-    log_path = "/pfs/data6/home/ka/ka_stud/ka_uqefa/ray_debug_override_tool_agent_loop.txt"
-    with open(log_path, "a") as f:
-        f.write(f"{message}\n")
-
 class AgentState(Enum):
     PENDING = "pending"
     GENERATING = "generating"
@@ -325,8 +318,6 @@ class ToolAgentLoop(AgentLoopBase):
                 logger.error(f"Invalid state: {state}")
                 state = AgentState.TERMINATED
 
-        _force_log(agent_data.messages)
-
         # Finalize output
         response_ids = agent_data.prompt_ids[-len(agent_data.response_mask) :]
         prompt_ids = agent_data.prompt_ids[: len(agent_data.prompt_ids) - len(agent_data.response_mask)]
@@ -429,8 +420,6 @@ class ToolAgentLoop(AgentLoopBase):
         engine_name = self.config.actor_rollout_ref.rollout.name
         include_stop_str_in_output = self.config.reward.reward_kwargs.get("include_stop_str_in_output", False)
         stop_string_mapping = self.config.reward.reward_kwargs.get("stop_string_mapping", {})
-
-        _force_log("#### engine_name ####")
         
         # Only reattach if the engine strips them (i.e., NOT vllm)
         if engine_name != "vllm" and stop_string_mapping and include_stop_str_in_output:
@@ -458,18 +447,12 @@ class ToolAgentLoop(AgentLoopBase):
         if output.routed_experts is not None:
             agent_data.routed_experts = output.routed_experts
 
-        _force_log(f"##### {len(agent_data.response_mask) == len(agent_data.response_logprobs)} #####")
-        _force_log(f"\n[CRITICAL PROOF] Active Parser Name: {self.tool_parser_name} | Class: {self.tool_parser.__class__.__name__}")
-
         # Check termination conditions
         if not ignore_termination and len(agent_data.response_mask) >= self.response_length:
-            _force_log("#### not ignore_termination and len(agent_data.response_mask) >= self.response_length ####")
             return AgentState.TERMINATED
         if self.max_assistant_turns and agent_data.assistant_turns >= self.max_assistant_turns:
-            _force_log("#### self.max_assistant_turns and agent_data.assistant_turns >= self.max_assistant_turns ####")
             return AgentState.TERMINATED
         if self.max_user_turns and agent_data.user_turns >= self.max_user_turns:
-            _force_log("#### self.max_user_turns and agent_data.user_turns >= self.max_user_turns ####")
             return AgentState.TERMINATED
 
         # Extract tool calls
@@ -525,10 +508,6 @@ class ToolAgentLoop(AgentLoopBase):
         add_messages: list[dict[str, Any]] = []
         new_images_this_turn: list[Any] = []  # Local variable instead of agent_data attribute
         new_videos_this_turn: list[Any] = []
-
-        tool_calls_serial = "\n".join([f"name: {tc.name} | arguments: {tc.arguments}" for tc in agent_data.tool_calls])
-        
-        _force_log(tool_calls_serial)
 
         tasks = []
         tool_call_names = []
