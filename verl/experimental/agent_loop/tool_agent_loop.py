@@ -52,6 +52,11 @@ class AgentState(Enum):
     INTERACTING = "interacting"
 
 
+USER_TOOL_PATTERN = re.compile(r'\b(?:user|tool)\s*(?=<tool_response>)')
+ASSISTANT_PATTERN = re.compile(r'\bassistant\s*(?=<think>)')
+SPACING_PATTERN = re.compile(r'\n{3,}')
+
+
 def process_generation_to_code(gen: str) -> str:
     return textwrap.dedent(gen).strip()
 
@@ -797,13 +802,13 @@ class ToolAgentLoop(AgentLoopBase):
         except Exception as e:
             logger.warning(f"Error when executing tool: {e}")
             # TODO: Hacky change just for my code exe tool...
-            raw_current_code = self.process_generation_to_code(tool_args.get("code", ""))
+            raw_current_code = process_generation_to_code(tool_args.get("code", ""))
             
             formatted_error = (f"{tool.code_result_start_tag}Error when executing tool: {e}{tool.code_result_end_tag}"
                 if hasattr(tool, "code_result_start_tag") and hasattr(tool, "code_result_end_tag") else
                 f"Error when executing tool: {e}"
             )
-            
+
             return (
                 ToolResponse(
                     text=formatted_error.strip(),
