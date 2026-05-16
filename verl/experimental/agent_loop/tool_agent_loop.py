@@ -17,6 +17,7 @@ import logging
 import os
 from enum import Enum
 import re
+import textwrap
 from typing import Any, Dict, Literal, Optional, Tuple
 from uuid import uuid4
 
@@ -50,7 +51,9 @@ class AgentState(Enum):
     TERMINATED = "terminated"
     INTERACTING = "interacting"
 
-    
+
+def process_generation_to_code(gen: str) -> str:
+    return textwrap.dedent(gen).strip()
 
 def reattach_stop_string_universal(generated_text: str, stop_mapping: dict[str, str]) -> str:
     """
@@ -793,13 +796,32 @@ class ToolAgentLoop(AgentLoopBase):
             )
         except Exception as e:
             logger.warning(f"Error when executing tool: {e}")
+            # TODO: Hacky change just for my code exe tool...
+            raw_current_code = self.process_generation_to_code(tool_args.get("code", ""))
+            
+            formatted_error = (f"{tool.code_result_start_tag}Error when executing tool: {e}{tool.code_result_end_tag}"
+                if hasattr(tool, "code_result_start_tag") and hasattr(tool, "code_result_end_tag") else
+                f"Error when executing tool: {e}"
+            )
+            
             return (
                 ToolResponse(
-                    text=f"Error when executing tool: {e}",
+                    text=formatted_error.strip(),
                 ),
                 0.0,
-                {},
+                { 
+                    "code": raw_current_code,
+                    "code_block_success": False, 
+                    "code_block_exe_time": -1.0
+                },
             )
+            # return (
+            #     ToolResponse(
+            #         text=f"Error when executing tool: {e}",
+            #     ),
+            #     0.0,
+            #     {},
+            # )
         finally:
             if tool and instance_id:
                 await tool.release(instance_id)
