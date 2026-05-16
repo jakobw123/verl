@@ -369,7 +369,7 @@ class ToolAgentLoop(AgentLoopBase):
             "turn_scores": agent_data.turn_scores, 
             "tool_rewards": agent_data.tool_rewards,
             "tool_metrics": agent_data.extra_fields.get("tool_metrics", []),
-            "use_mt_collapse_masking": self.use_mt_collapse_masking
+            # "use_mt_collapse_masking": self.use_mt_collapse_masking
         })
 
         return output
@@ -728,13 +728,13 @@ class ToolAgentLoop(AgentLoopBase):
 
         agent_data.user_turns += 1
 
-        end_token_idx = len(agent_data.response_mask)
+        # end_token_idx = len(agent_data.response_mask)
 
-        if self.use_mt_collapse_masking and agent_data.extra_fields.get("tool_metrics"):
-            latest_metric = agent_data.extra_fields["tool_metrics"][-1] 
+        # if self.use_mt_collapse_masking and agent_data.extra_fields.get("tool_metrics"):
+        #     latest_metric = agent_data.extra_fields["tool_metrics"][-1] 
 
-            latest_metric["start_token_idx"] = start_token_idx
-            latest_metric["end_token_idx"] = end_token_idx
+        #     latest_metric["start_token_idx"] = start_token_idx
+        #     latest_metric["end_token_idx"] = end_token_idx
 
         return AgentState.GENERATING
     
