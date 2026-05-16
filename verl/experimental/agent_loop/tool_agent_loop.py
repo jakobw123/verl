@@ -715,9 +715,9 @@ class ToolAgentLoop(AgentLoopBase):
         if len(agent_data.response_mask) + len(response_ids) >= self.response_length:
             return AgentState.TERMINATED
 
-        start_token_idx = len(agent_data.response_mask)
-        if len(response_ids):
-            start_token_idx += 1
+        # start_token_idx = len(agent_data.response_mask)
+        # if len(response_ids):
+        #     start_token_idx += 1
 
         # Update prompt_ids and response_mask
         agent_data.prompt_ids += response_ids
