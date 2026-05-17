@@ -56,6 +56,13 @@ USER_TOOL_PATTERN = re.compile(r'\b(?:user|tool)\s*(?=<tool_response>)')
 ASSISTANT_PATTERN = re.compile(r'\bassistant\s*(?=<think>)')
 SPACING_PATTERN = re.compile(r'\n{3,}')
 
+# def _force_log(message: str):
+#     """Bypasses Ray/SLURM stdout routing by writing directly to disk."""
+#     # Using your absolute path from previous logs
+#     log_path = "/pfs/data6/home/ka/ka_stud/ka_uqefa/ray_debug_override_tool_agent.txt"
+#     with open(log_path, "a") as f:
+#         f.write(f"{message}\n")
+
 
 def process_generation_to_code(gen: str) -> str:
     return textwrap.dedent(gen).strip()
@@ -454,6 +461,18 @@ class ToolAgentLoop(AgentLoopBase):
 
         if output.routed_experts is not None:
             agent_data.routed_experts = output.routed_experts
+
+        # _dec = self.tokenizer.decode(agent_data.response_ids, skip_special_tokens=False)
+        # _force_log(json.dumps({
+        #     "rid": agent_data.request_id,
+        #     "a_turn": agent_data.assistant_turns,
+        #     "n_tokens": len(agent_data.response_ids),
+        #     "first_ids": agent_data.response_ids[:8],
+        #     "n_logprobs": len(output.log_probs) if output.log_probs else 0,
+        #     "decoded_head": _dec[:200],
+        #     "decoded_tail": _dec[-80:],
+        #     "prompt_len_now": len(agent_data.prompt_ids),
+        # }))
 
         # Check termination conditions
         if not ignore_termination and len(agent_data.response_mask) >= self.response_length:
