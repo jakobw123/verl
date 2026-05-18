@@ -828,6 +828,8 @@ class ToolAgentLoop(AgentLoopBase):
                 f"Error when executing tool: {e}"
             )
 
+            # _force_log(formatted_error)
+
             return (
                 ToolResponse(
                     text=formatted_error.strip(),
