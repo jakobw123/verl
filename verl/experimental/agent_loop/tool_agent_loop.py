@@ -807,7 +807,7 @@ class ToolAgentLoop(AgentLoopBase):
         self, tool_call: FunctionCall, tools_kwargs: dict[str, Any], agent_data: AgentData
     ) -> tuple[ToolResponse, float, dict]:
         """Call tool and return tool response."""
-        tool, instance_id = None, None
+        tool, instance_id, tool_args = None, None, None
         try:
             # TODO: append malformed tool_call to the prompt: invalid function name or arguments
             tool_name = tool_call.name
@@ -821,10 +821,10 @@ class ToolAgentLoop(AgentLoopBase):
         except Exception as e:
             logger.warning(f"Error when executing tool: {e}")
             # TODO: Hacky change just for my code exe tool...
-            raw_current_code = process_generation_to_code(tool_args.get("code", ""))
+            raw_current_code = process_generation_to_code(tool_args.get("code", "") if tool_args is not None else "")
             
             formatted_error = (f"{tool.code_result_start_tag}Error when executing tool: {e}{tool.code_result_end_tag}"
-                if hasattr(tool, "code_result_start_tag") and hasattr(tool, "code_result_end_tag") else
+                if tool is not None and hasattr(tool, "code_result_start_tag") and hasattr(tool, "code_result_end_tag") else
                 f"Error when executing tool: {e}"
             )
 
