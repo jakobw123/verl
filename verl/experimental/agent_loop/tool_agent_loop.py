@@ -56,12 +56,12 @@ USER_TOOL_PATTERN = re.compile(r'\b(?:user|tool)\s*(?=<tool_response>)')
 ASSISTANT_PATTERN = re.compile(r'\bassistant\s*(?=<think>)')
 SPACING_PATTERN = re.compile(r'\n{3,}')
 
-# def _force_log(message: str):
-#     """Bypasses Ray/SLURM stdout routing by writing directly to disk."""
-#     # Using your absolute path from previous logs
-#     log_path = "/pfs/data6/home/ka/ka_stud/ka_uqefa/ray_debug_override_tool_agent.txt"
-#     with open(log_path, "a") as f:
-#         f.write(f"{message}\n")
+def _force_log(message: str):
+    """Bypasses Ray/SLURM stdout routing by writing directly to disk."""
+    # Using your absolute path from previous logs
+    log_path = "/pfs/data6/home/ka/ka_stud/ka_uqefa/ray_debug_override_tool_agent.txt"
+    with open(log_path, "a") as f:
+        f.write(f"{message}\n")
 
 
 def process_generation_to_code(gen: str) -> str:
@@ -405,7 +405,7 @@ class ToolAgentLoop(AgentLoopBase):
     ) -> AgentState:
         """Handle the generating state: generate model response and check for tool calls."""
         add_messages: list[dict[str, Any]] = []
-
+        _t0 = asyncio.get_event_loop().time()
         with simple_timer("generate_sequences", agent_data.metrics):
             output: TokenOutput = await self.server_manager.generate(
                 request_id=agent_data.request_id,
@@ -414,6 +414,11 @@ class ToolAgentLoop(AgentLoopBase):
                 image_data=agent_data.image_data,
                 video_data=agent_data.video_data,
             )
+
+        _elapsed = asyncio.get_event_loop().time() - _t0
+        _n_gen = len(output.token_ids)
+        _ctx = len(agent_data.prompt_ids)
+        _force_log(f"{_t0},{_ctx},{_n_gen},{_elapsed:.3f},{agent_data.assistant_turns},{output.num_preempted}\n")
         # first time to set num_preempted
         if agent_data.metrics.get("num_preempted") is None:
             agent_data.metrics["num_preempted"] = output.num_preempted if output.num_preempted is not None else -1
