@@ -405,7 +405,7 @@ class ToolAgentLoop(AgentLoopBase):
     ) -> AgentState:
         """Handle the generating state: generate model response and check for tool calls."""
         add_messages: list[dict[str, Any]] = []
-        _t0 = asyncio.get_event_loop().time()
+        # _t0 = asyncio.get_event_loop().time()
         with simple_timer("generate_sequences", agent_data.metrics):
             output: TokenOutput = await self.server_manager.generate(
                 request_id=agent_data.request_id,
@@ -415,10 +415,10 @@ class ToolAgentLoop(AgentLoopBase):
                 video_data=agent_data.video_data,
             )
 
-        _elapsed = asyncio.get_event_loop().time() - _t0
-        _n_gen = len(output.token_ids)
-        _ctx = len(agent_data.prompt_ids)
-        _force_log(f"{_t0},{_ctx},{_n_gen},{_elapsed:.3f},{agent_data.assistant_turns},{output.num_preempted}\n")
+        # _elapsed = asyncio.get_event_loop().time() - _t0
+        # _n_gen = len(output.token_ids)
+        # _ctx = len(agent_data.prompt_ids)
+        # _force_log(f"{_t0},{_ctx},{_n_gen},{_elapsed:.3f},{agent_data.assistant_turns},{output.num_preempted},{agent_data.request_id}\n")
         # first time to set num_preempted
         if agent_data.metrics.get("num_preempted") is None:
             agent_data.metrics["num_preempted"] = output.num_preempted if output.num_preempted is not None else -1
